@@ -1,0 +1,15 @@
+[2026-02-24 16:24:55] Seed started on 127.0.0.1:5001
+[2026-02-24 16:25:30] Received REGISTER from peer 127.0.0.1:6001
+[2026-02-24 16:25:30] Proposing ADD for 127.0.0.1:6001
+[2026-02-24 16:25:30] Received PROPOSE_ADD for 127.0.0.1:6001 from 127.0.0.1:5002
+[2026-02-24 16:25:30] Consensus reached (ADD): 127.0.0.1:6001 added to PL.
+[2026-02-24 16:25:30] Received COMMIT_ADD: 127.0.0.1:6001 added to PL.
+[2026-02-24 16:25:39] Received PROPOSE_ADD for 127.0.0.1:6002 from 127.0.0.1:5003
+[2026-02-24 16:25:39] Received PROPOSE_ADD for 127.0.0.1:6002 from 127.0.0.1:5002
+[2026-02-24 16:25:39] Received COMMIT_ADD: 127.0.0.1:6002 added to PL.
+[2026-02-24 16:25:39] Received COMMIT_ADD: 127.0.0.1:6002 added to PL.
+[2026-02-24 16:25:51] Received REGISTER from peer 127.0.0.1:6003
+[2026-02-24 16:25:51] Proposing ADD for 127.0.0.1:6003
+[2026-02-24 16:25:51] Received PROPOSE_ADD for 127.0.0.1:6003 from 127.0.0.1:5002
+[2026-02-24 16:25:51] Consensus reached (ADD): 127.0.0.1:6003 added to PL.
+[2026-02-24 16:25:51] Received COMMIT_ADD: 127.0.0.1:6003 added to PL.
