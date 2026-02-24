@@ -8,39 +8,58 @@ class SeedNode:
     def __init__(self, config_file, my_port):
         self.config_file = config_file
         self.my_port = int(my_port)
-        # For local testing, default to 127.0.0.1.
-        self.my_ip = socket.gethostbyname(socket.gethostname())
         self.seeds = []
+        # Default IP; will be updated from config
+        self.my_ip = '127.0.0.1' 
         self.load_config()
+        
         self.PL = set()
         self.lock = threading.Lock()
         
-        self.log_file = open(f"outputfile_seed_{self.my_port}.txt", "a")
+        # CORRECTED: Single output file as per assignment requirements
+        self.log_file = open("outputfile.txt", "a")
         
         self.proposals = {}
         self.committed = set()
 
     def load_config(self):
+        found = False
         with open(self.config_file, 'r') as f:
             for line in f:
                 line = line.strip()
                 if line:
-                    ip, port = line.split(',')
-                    self.seeds.append((ip, int(port)))
-        for ip, port in self.seeds:
-            if port == self.my_port:
-                self.my_ip = ip
+                    parts = line.split(',')
+                    ip = parts[0]
+                    port = int(parts[1])
+                    self.seeds.append((ip, port))
+                    
+                    if port == self.my_port:
+                        self.my_ip = ip
+                        found = True
+        
+        if not found:
+            print(f"Warning: Port {self.my_port} not found in config. Using default IP {self.my_ip}")
 
     def log(self, msg):
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] {msg}"
+        # Include identity in the log since multiple nodes write to the same file
+        log_entry = f"[Seed {self.my_port}] [{timestamp}] {msg}"
         print(log_entry)
-        self.log_file.write(log_entry + "\n")
-        self.log_file.flush()
+        try:
+            self.log_file.write(log_entry + "\n")
+            self.log_file.flush()
+        except ValueError:
+            pass # File might be closed
 
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.bind(('0.0.0.0', self.my_port))
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            server.bind(('0.0.0.0', self.my_port))
+        except OSError as e:
+            self.log(f"Failed to bind port {self.my_port}: {e}")
+            sys.exit(1)
+            
         server.listen(10)
         self.log(f"Seed started on {self.my_ip}:{self.my_port}")
         
@@ -52,6 +71,8 @@ class SeedNode:
                 break
             except Exception as e:
                 self.log(f"Error accepting connection: {e}")
+        
+        self.log_file.close()
 
     def handle_client(self, conn, addr):
         try:
@@ -107,7 +128,6 @@ class SeedNode:
                 'sender_ip': self.my_ip,
                 'sender_port': self.my_port
             })
-            # Check immediately if n=1 or we are somehow already reaching consensus with 1 vote
             self.check_consensus_add(peer_ip, peer_port, prop_key)
             conn.sendall(json.dumps({'status': 'PROPOSAL_STARTED'}).encode('utf-8'))
 
@@ -150,7 +170,7 @@ class SeedNode:
 
         elif mtype == 'GET_PL':
             with self.lock:
-                pl_list = list(self.PL)
+                pl_list = [list(p) for p in self.PL]
             conn.sendall(json.dumps({'status': 'SUCCESS', 'PL': pl_list}).encode('utf-8'))
 
         elif mtype == 'DEAD_NODE':

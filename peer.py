@@ -8,6 +8,7 @@ import platform
 import subprocess
 import hashlib
 import random
+from collections import defaultdict
 
 class PeerNode:
     def __init__(self, config_file, my_port, my_ip='127.0.0.1'):
@@ -18,11 +19,14 @@ class PeerNode:
         self.load_config()
         
         self.neighbors = set()
-        self.ML = set()
+        self.ML = set() # Message List for gossip
         self.lock = threading.Lock()
         
-        self.log_file = open(f"outputfile_peer_{self.my_port}.txt", "a")
-        self.suspects = {}
+        # CORRECTED: Single output file as per assignment requirements
+        self.log_file = open("outputfile.txt", "a")
+        
+        # Suspects: key=(dead_ip, dead_port), value=set(reporters)
+        self.suspects = defaultdict(set)
         self.dead_nodes = set()
         
         self.msg_count = 0
@@ -33,18 +37,23 @@ class PeerNode:
             for line in f:
                 line = line.strip()
                 if line:
-                    ip, port = line.split(',')
-                    self.seeds.append((ip, int(port)))
+                    parts = line.split(',')
+                    self.seeds.append((parts[0], int(parts[1])))
 
     def log(self, msg):
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] {msg}"
+        # Include identity in the log since multiple nodes write to the same file
+        log_entry = f"[Peer {self.my_port}] [{timestamp}] {msg}"
         print(log_entry)
-        self.log_file.write(log_entry + "\n")
-        self.log_file.flush()
+        try:
+            self.log_file.write(log_entry + "\n")
+            self.log_file.flush()
+        except ValueError:
+            pass
 
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(('0.0.0.0', self.my_port))
         server.listen(10)
         self.log(f"Peer started on {self.my_ip}:{self.my_port}")
@@ -66,6 +75,7 @@ class PeerNode:
                 time.sleep(1)
             except KeyboardInterrupt:
                 break
+        self.log_file.close()
 
     def accept_connections(self, server):
         while True:
@@ -151,33 +161,35 @@ class PeerNode:
                 
         self.log(f"Degrees of active peers: {degrees}")
         max_c = 3
-        c = random.randint(1, min(max_c, max(1, len(degrees)))) if degrees else 0
+        # Use min to avoid errors if fewer peers exist
+        needed = random.randint(1, max_c)
+        c = min(needed, len(degrees))
         
         if c == 0:
             return
             
-        if len(degrees) <= c:
-            selected = list(degrees.keys())
-        else:
-            selected = []
-            pool = list(degrees.keys())
-            while len(selected) < c and pool:
-                D = [degrees[p] for p in pool]
-                total_m = sum(D)
-                if total_m == 0:
-                    probs = [1.0/len(pool)] * len(pool)
-                else:
-                    probs = [d/total_m for d in D]
-                
-                r = random.random()
-                cum = 0
-                idx = len(pool) - 1
-                for i, p in enumerate(probs):
-                    cum += p
-                    if r <= cum:
-                        idx = i
-                        break
-                selected.append(pool.pop(idx))
+        # Preferential Attachment Logic
+        selected = []
+        pool = list(degrees.keys())
+        
+        while len(selected) < c and pool:
+            D = [degrees[p] for p in pool]
+            total_m = sum(D)
+            
+            if total_m == 0:
+                probs = [1.0/len(pool)] * len(pool)
+            else:
+                probs = [d/total_m for d in D]
+            
+            r = random.random()
+            cum = 0
+            idx = len(pool) - 1
+            for i, p in enumerate(probs):
+                cum += p
+                if r <= cum:
+                    idx = i
+                    break
+            selected.append(pool.pop(idx))
                 
         self.log(f"Selected neighbors based on power law: {selected}")
         with self.lock:
@@ -219,6 +231,9 @@ class PeerNode:
             with self.lock:
                 if msg_hash in self.ML:
                     return
+                # Cap ML size to prevent memory leak
+                if len(self.ML) > 5000:
+                    self.ML.pop()
                 self.ML.add(msg_hash)
                 
             self.log(f"Received new GOSSIP from {sender_ip}:{sender_port} -> {message_str}")
@@ -237,8 +252,16 @@ class PeerNode:
             suspect_port = msg['suspect_port']
             reporter_ip = msg['reporter_ip']
             reporter_port = msg['reporter_port']
-            self.log(f"Received SUSPECT for {suspect_ip}:{suspect_port} from {reporter_ip}:{reporter_port}")
-            self.suspect_node(suspect_ip, suspect_port, reporter_ip, reporter_port)
+            ttl = msg.get('ttl', 0)
+            
+            self.log(f"Received SUSPECT for {suspect_ip}:{suspect_port} from {reporter_ip}:{reporter_port} (TTL:{ttl})")
+            
+            self.handle_suspicion(suspect_ip, suspect_port, reporter_ip, reporter_port)
+            
+            # Forward if TTL > 0 to allow consensus among disjoint neighbors
+            if ttl > 0:
+                msg['ttl'] = ttl - 1
+                self.broadcast_to_neighbors(msg, exclude_ip=sender_ip if 'sender_ip' in msg else None)
 
     def gossip_thread_loop(self):
         time.sleep(5)
@@ -293,42 +316,44 @@ class PeerNode:
                     dead_list.append((nip, nport))
                     
             for nip, nport in dead_list:
-                self.suspect_node(nip, nport, self.my_ip, self.my_port)
+                # Log suspicion locally
+                self.handle_suspicion(nip, nport, self.my_ip, self.my_port)
+                
+                # Broadcast suspicion to neighbors with TTL=2 (radius of 2)
+                # This ensures disjoint neighbors of the dead node hear about it
+                suspect_msg = {
+                    'type': 'SUSPECT',
+                    'suspect_ip': nip,
+                    'suspect_port': nport,
+                    'reporter_ip': self.my_ip,
+                    'reporter_port': self.my_port,
+                    'ttl': 2
+                }
+                self.broadcast_to_neighbors(suspect_msg)
 
-    def suspect_node(self, suspect_ip, suspect_port, reporter_ip, reporter_port):
+    def handle_suspicion(self, suspect_ip, suspect_port, reporter_ip, reporter_port):
         with self.lock:
             if (suspect_ip, suspect_port) in self.dead_nodes:
                 return
-            
-            if (suspect_ip, suspect_port) not in self.suspects:
-                self.suspects[(suspect_ip, suspect_port)] = set()
+
             self.suspects[(suspect_ip, suspect_port)].add((reporter_ip, reporter_port))
             
-            is_local_suspect = (reporter_ip == self.my_ip and reporter_port == self.my_port)
+            # Consensus Threshold:
+            # If network is very small (e.g. 1 neighbor), 1 vote is consensus.
+            # Otherwise require at least 2 independent reports.
             threshold = 2
-            if len(self.neighbors) <= 1:
-                threshold = 1
-                
-            if len(self.suspects[(suspect_ip, suspect_port)]) >= threshold:
-                self.log(f"Peer-level consensus reached for Dead Node {suspect_ip}:{suspect_port}.")
+            
+            unique_reporters = len(self.suspects[(suspect_ip, suspect_port)])
+            
+            if unique_reporters >= threshold:
+                self.log(f"Peer-level consensus reached for Dead Node {suspect_ip}:{suspect_port} (Votes: {unique_reporters})")
                 self.dead_nodes.add((suspect_ip, suspect_port))
+                
                 if (suspect_ip, suspect_port) in self.neighbors:
                     self.neighbors.remove((suspect_ip, suspect_port))
                 
-                # We can report outside the lock to avoid deadlocks
+                # Report to seeds after peer consensus
                 threading.Thread(target=self.report_dead_node_to_seeds, args=(suspect_ip, suspect_port), daemon=True).start()
-                return
-
-        if is_local_suspect:
-            self.log(f"Suspecting {suspect_ip}:{suspect_port}. Broadcasting SUSPECT.")
-            suspect_msg = {
-                'type': 'SUSPECT',
-                'suspect_ip': suspect_ip,
-                'suspect_port': suspect_port,
-                'reporter_ip': self.my_ip,
-                'reporter_port': self.my_port
-            }
-            self.broadcast_to_neighbors(suspect_msg)
 
     def report_dead_node_to_seeds(self, dead_ip, dead_port):
         self.log(f"Reporting Dead Node {dead_ip}:{dead_port} to seeds.")
