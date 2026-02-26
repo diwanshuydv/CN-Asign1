@@ -17,3 +17,4 @@ build/
 *.tar.gz
 *.whl
 Assignment-1-CSL3080.pdf
+*.csv
