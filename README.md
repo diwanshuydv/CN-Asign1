@@ -41,7 +41,7 @@ This project implements a gossip-based P2P network using Python. It consists of 
    python3 peer.py config.csv 6003
    ...
    ```
-   *Logs will be written to `outputfile_peer_<port>.txt`.*
+   *Logs will be written to `outputfile.txt`.*
 
    You can optionally specify the exact IP address the peer should use:
    ```bash
